@@ -2,20 +2,20 @@
 
 ## Purpose
 
-This workspace contains a Pluto SDR radio project plus the ADI HDL reference-design tree in [hdl/](hdl/). The highest-value project context is in [AGENT_CONTEXT.md](AGENT_CONTEXT.md); treat that as the source of truth for the radio stack, gain conventions, signal-processing assumptions, and debug workflow.
+This workspace contains a Pluto SDR application and a customized Pluto firmware repository. The application behavior and radio assumptions are documented in [apps/pluto_downconverter/README.md](apps/pluto_downconverter/README.md).
 
 ## Project layout
 
-- [AGENT_CONTEXT.md](AGENT_CONTEXT.md): Pluto-specific architecture, hardware assumptions, pitfalls, and debugging notes.
-- [hdl/README.md](hdl/README.md): overview of the HDL reference-design repository and build workflow.
-- [hdl/projects](hdl/projects): FPGA project directories and board-specific builds.
-- [hdl/library](hdl/library): reusable HDL IP and utility modules.
+- [apps/pluto_downconverter](apps/pluto_downconverter): host-side scripts and the native C application.
+- [apps/pluto_downconverter/README.md](apps/pluto_downconverter/README.md): radio architecture, operating assumptions, and debugging notes.
+- [firmware/plutosdr-fw](firmware/plutosdr-fw): Pluto firmware repository as a Git submodule.
+- [firmware/plutosdr-fw/br2-external](firmware/plutosdr-fw/br2-external): Buildroot external tree containing the application package.
 
 ## Working conventions
 
 - Prefer small, targeted edits over broad cleanup.
 - Do not change radio behavior that is intentionally different across drivers unless the user explicitly asks for a change.
-- Preserve the known operational invariants from [AGENT_CONTEXT.md](AGENT_CONTEXT.md):
+- Preserve the known operational invariants from [apps/pluto_downconverter/README.md](apps/pluto_downconverter/README.md):
   - Soapy TX gain is not equivalent to raw libiio attenuation.
   - The offset tuning is deliberate and not a defect.
   - 600 kSps is a deliberate operating point for the full-duplex path.
@@ -25,19 +25,11 @@ This workspace contains a Pluto SDR radio project plus the ADI HDL reference-des
 
 ## Build and validation guidance
 
-- For HDL work, follow the build flow in [hdl/README.md](hdl/README.md): use Make in the relevant project directory, for example:
-
-  ```bash
-  cd hdl/projects/<project>/<board>
-  make
-  ```
-
-- For Pluto SDR script work, use the run patterns and safeguards captured in [AGENT_CONTEXT.md](AGENT_CONTEXT.md), including the documented `--tx-gain`, offset, filter, and shutdown behavior.
+- For Pluto SDR script work, use the run patterns and safeguards captured in [apps/pluto_downconverter/README.md](apps/pluto_downconverter/README.md), including the documented `--tx-gain`, offset, filter, and shutdown behavior.
+- For firmware changes, build from `firmware/plutosdr-fw` and preserve its pinned submodule revisions.
 - If a bug report sounds like an RF or stream issue, diagnose with the project’s checklist before changing code: waterfall/FFT view first, then read-back device settings, then compare against the known-good state.
 
 ## Useful links
 
-- [AGENT_CONTEXT.md](AGENT_CONTEXT.md)
-- [hdl/README.md](hdl/README.md)
-- [hdl/docs](hdl/docs)
-- [hdl/projects](hdl/projects)
+- [apps/pluto_downconverter/README.md](apps/pluto_downconverter/README.md)
+- [firmware/plutosdr-fw/README.md](firmware/plutosdr-fw/README.md)
