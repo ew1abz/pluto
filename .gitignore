@@ -1,0 +1,6 @@
+*.pyc
+__pycache__/
+
+# Local firmware/build outputs
+firmware/plutosdr-fw/build/
+firmware/plutosdr-fw/buildroot/output/
