@@ -458,6 +458,7 @@ typedef struct {
     bool   rx_agc;
     bool   use_filter;
     double filter_bw;
+    double listen;     /* filter centre as a 70cm frequency; 0 = out_freq */
     int    decim;
     size_t bufsize;
 } opts_t;
@@ -481,6 +482,11 @@ static void usage(const char *prog)
 "                      convention used by the Python version.\n"
 "  --filter            enable narrowband filtering (removes DC spike)\n"
 "  --filter-bw HZ      filter cutoff (default 20000)\n"
+"  --listen HZ         centre the filter on this 70cm frequency instead\n"
+"                      of --out-freq. Slides the passband within the\n"
+"                      captured window; the 1:1 frequency mapping is\n"
+"                      unaffected, so signals still come out where\n"
+"                      passthrough would put them. Needs --filter.\n"
 "  --decim N           decimation factor (default: auto)\n"
 "  --bufsize N         IIO buffer size in samples (default 16384)\n"
 "  --help\n"
@@ -505,6 +511,7 @@ int main(int argc, char **argv)
         .rx_agc     = false,
         .use_filter = false,
         .filter_bw  = 20000.0,
+        .listen     = 0.0,
         .decim      = 0,
         .bufsize    = 16384,
     };
@@ -521,6 +528,7 @@ int main(int argc, char **argv)
         {"tx-atten",  required_argument, 0, 'a'},
         {"filter",    no_argument,       0, 'f'},
         {"filter-bw", required_argument, 0, 'b'},
+        {"listen",    required_argument, 0, 'L'},
         {"decim",     required_argument, 0, 'd'},
         {"bufsize",   required_argument, 0, 'B'},
         {"help",      no_argument,       0, 'h'},
@@ -541,6 +549,7 @@ int main(int argc, char **argv)
         case 'a': o.tx_atten = atof(optarg); break;
         case 'f': o.use_filter = true; break;
         case 'b': o.filter_bw = atof(optarg); break;
+        case 'L': o.listen = atof(optarg); break;
         case 'd': o.decim = atoi(optarg); break;
         case 'B': o.bufsize = (size_t)atol(optarg); break;
         case 'h': usage(argv[0]); return 0;
@@ -566,6 +575,36 @@ int main(int argc, char **argv)
         return 1;
     }
 
+    /*
+     * Where the filter sits. The wanted slice is at baseband if_offset by
+     * default; --listen slides it by the same amount the listening
+     * frequency differs from out_freq. Both mixers move together, so the
+     * signal is put back exactly where it came from and the 1:1 mapping
+     * between the 3cm and 70cm dials is untouched -- only the slice that
+     * survives the lowpass changes.
+     */
+    if (o.listen <= 0.0)
+        o.listen = o.out_freq;
+    double tune = o.listen - o.out_freq;
+    double mix  = o.if_offset + tune;
+
+    if (o.listen != o.out_freq && !o.use_filter) {
+        fprintf(stderr,
+            "error: --listen only means something with --filter; in\n"
+            "       passthrough the whole captured window is retransmitted.\n");
+        return 1;
+    }
+    if (fabs(mix) + o.filter_bw >= o.samp_rate / 2.0) {
+        fprintf(stderr,
+            "error: --listen %.6f MHz puts the passband outside the\n"
+            "       captured window. At %.0f Sps with a %.0f Hz filter,\n"
+            "       --listen must be within %.6f .. %.6f MHz.\n",
+            o.listen / 1e6, o.samp_rate, o.filter_bw,
+            (o.out_freq - o.if_offset - o.samp_rate / 2.0 + o.filter_bw) / 1e6,
+            (o.out_freq - o.if_offset + o.samp_rate / 2.0 - o.filter_bw) / 1e6);
+        return 1;
+    }
+
     double if_center = o.rf_target - o.lnb_lo;
     double rx_lo = if_center - o.if_offset;
     double tx_lo = o.out_freq - o.if_offset;
@@ -585,7 +624,10 @@ int main(int argc, char **argv)
     printf("\n");
     printf("Pluto RX LO    : %.6f MHz\n", rx_lo / 1e6);
     printf("Pluto TX LO    : %.6f MHz\n", tx_lo / 1e6);
-    printf("--> LISTEN AT  : %.6f MHz\n", o.out_freq / 1e6);
+    printf("--> LISTEN AT  : %.6f MHz\n", o.listen / 1e6);
+    if (tune != 0.0)
+        printf("    (%.6f MHz on 3cm; filter moved %+.1f kHz by --listen)\n",
+               (o.rf_target + tune) / 1e6, tune / 1e3);
     printf("    (artifacts at %.6f MHz)\n", (o.out_freq - o.if_offset) / 1e6);
     printf("\n");
 
@@ -690,12 +732,22 @@ int main(int argc, char **argv)
     if (!o.rx_agc) printf("                 %.1f dB\n", o.rx_gain);
     printf("TX attenuation : %.2f dB (0 = full power)\n", o.tx_atten);
     printf("Filter         : %s\n", o.use_filter ? "ON" : "OFF (passthrough)");
-    if (o.use_filter)
+    if (o.use_filter) {
+        printf("                 centred on %.6f MHz", o.listen / 1e6);
+        if (tune != 0.0)
+            printf(" (%+.1f kHz, sky %.6f MHz)",
+                   tune / 1e3, (o.rf_target + tune) / 1e6);
+        printf("\n");
         printf("                 %.0f Hz cutoff, %d taps (~%.1f kHz skirt),\n"
                "                 decim %d -> %.1f kSps\n",
                o.filter_bw, taps_for(o.samp_rate, o.filter_bw),
                3.3 * o.samp_rate / taps_for(o.samp_rate, o.filter_bw) / 1e3,
                decim, o.samp_rate / decim / 1e3);
+        if (fabs(mix) < o.filter_bw)
+            printf("  *** WARNING: the RX DC spike at %.6f MHz is inside\n"
+                   "  *** the passband. Move --listen further from it.\n",
+                   (o.out_freq - o.if_offset) / 1e6);
+    }
     printf("Buffer size    : %zu samples\n", o.bufsize);
     printf("\n");
 
@@ -746,10 +798,10 @@ int main(int argc, char **argv)
             fprintf(stderr, "error: FIR init failed\n");
             return 1;
         }
-        /* mix the wanted signal from +offset down to DC before filtering */
-        nco_init(&nco_down, -o.if_offset, o.samp_rate);
-        /* and back up to +offset after, so it clears TX LO leakage */
-        nco_init(&nco_up, o.if_offset, o.samp_rate);
+        /* mix the wanted slice down to DC before filtering ... */
+        nco_init(&nco_down, -mix, o.samp_rate);
+        /* ... and back to exactly where it came from afterwards */
+        nco_init(&nco_up, mix, o.samp_rate);
 
         fi = malloc(sizeof(float) * o.bufsize);
         fq = malloc(sizeof(float) * o.bufsize);

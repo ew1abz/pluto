@@ -78,6 +78,39 @@ number of MHz, or the kHz digits drift apart. The earlier 432.300 default
 was 300 kHz off a whole-MHz shift, which is why 10368.100 came out on
 432.400.
 
+### Moving the filter without breaking the mapping
+
+`--filter` keeps a slice centred on `--out-freq`. `--listen HZ` slides that
+slice to any 70cm frequency inside the captured window:
+
+```sh
+pluto_downconverter --filter --listen 432.150e6
+```
+
+Both mixers move by the same amount, so the signal is put back exactly
+where it came from — the 1:1 dial mapping is untouched and signals still
+land where passthrough would put them. Only the slice that survives the
+lowpass moves.
+
+```
+--> LISTEN AT  : 432.150000 MHz
+    (10368.150000 MHz on 3cm; filter moved +150.0 kHz by --listen)
+```
+
+It costs nothing: an NCO runs at the same speed whatever its frequency.
+Measured 71.4% / 71.6% / 71.4% of one core at 0, +150 and −400 kHz.
+
+Two limits, both enforced:
+
+- The passband must stay inside the window: `|if_offset + tune| +
+  filter_bw < samp_rate/2`. At the defaults that is 431.320 – 432.480 MHz.
+- Tuning onto `out_freq - if_offset` (431.900) puts the RX DC spike in the
+  passband. That earns a warning rather than a refusal, since the spike is
+  only one of the two artifacts there.
+
+`--listen` needs `--filter`; in passthrough the whole window is
+retransmitted anyway and there is nothing to move.
+
 ### How much sky you can see at once
 
 Offset tuning shifts the window down by `--if-offset`, so the coverage is
