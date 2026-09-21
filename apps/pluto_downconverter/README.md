@@ -129,6 +129,19 @@ iio_attr -o -c ad9361-phy voltage0 sampling_frequency   # expect 600000
 iio_attr -o -c ad9361-phy voltage0 filter_fir_en        # expect 1
 ```
 
+Raw libiio does **not** do this for you. `pluto_downconverter.c` originally
+wrote `sampling_frequency` directly and got `-EINVAL` (-22) back, leaving the
+device at its 30.72 MSps reset default:
+
+```
+warn: write sampling_frequency = 600000 failed (-22)
+```
+
+It now calls `ad9361_set_bb_rate()` from libad9361, which designs and loads
+the decimate/interpolate-by-4 FIR when the requested rate is below the
+FIR-bypassed floor, and sets RX and TX together. That means linking
+`-lad9361`; `libad9361.so.0` is already in the Pluto rootfs.
+
 ### 4. `bufflen` is a device arg, not a stream arg
 
 ```python

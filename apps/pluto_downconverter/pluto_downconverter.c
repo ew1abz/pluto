@@ -47,16 +47,19 @@
  * On a host, cross-compiling for Pluto:
  *
  *   arm-linux-gnueabihf-gcc -O2 -mfpu=neon -mfloat-abi=hard \
- *       -o pluto_downconverter pluto_downconverter.c -liio -lm
+ *       -o pluto_downconverter pluto_downconverter.c -liio -lad9361 -lm
  *
- * You need libiio built for arm-linux-gnueabihf. If you have the Pluto
- * firmware build tree (plutosdr-fw), its staging directory already contains
- * a suitable libiio and headers:
+ * You need libiio and libad9361 built for arm-linux-gnueabihf. If you have
+ * the Pluto firmware build tree (plutosdr-fw), its staging directory already
+ * contains both plus headers:
  *
  *   arm-linux-gnueabihf-gcc -O2 -mfpu=neon -mfloat-abi=hard \
  *       -I<fw>/buildroot/output/staging/usr/include \
  *       -L<fw>/buildroot/output/staging/usr/lib \
- *       -o pluto_downconverter pluto_downconverter.c -liio -lm
+ *       -o pluto_downconverter pluto_downconverter.c -liio -lad9361 -lm
+ *
+ * libad9361.so.0 ships in the stock Pluto rootfs, so nothing extra needs
+ * copying to the target.
  *
  * Then copy over and run:
  *
@@ -82,6 +85,7 @@
 #include <stdbool.h>
 #include <getopt.h>
 #include <iio.h>
+#include <ad9361.h>
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -94,6 +98,26 @@
 #define DEFAULT_SAMPRATE 600000.0
 
 #define MAX_TAPS 512
+
+/*
+ * AD9361 baseband rate limits. The ADC/DAC clock floor is 25 MHz and the
+ * digital chain divides it by 12, so with the programmable FIR bypassed the
+ * lowest usable rate is 25e6/12 = 2.0834 MSPS. Loading the FIR at
+ * decimate/interpolate-by-4 drops the floor to 25e6/48 = 520.834 kSPS.
+ *
+ * A plain write to 'sampling_frequency' never touches the FIR, so anything
+ * under 2.0834 MSPS comes back -EINVAL and the device silently stays at
+ * whatever it was (30.72 MSPS out of reset). We go through
+ * ad9361_set_bb_rate() instead, which designs and loads the FIR when the
+ * requested rate needs it.
+ */
+#define AD9361_MIN_RATE     520834.0    /* with FIR dec/int 4 */
+#define AD9361_MIN_RATE_FIR 2083334.0   /* FIR bypassed */
+#define AD9361_MAX_RATE     61440000.0
+
+/* Accept the rounding the divider chain forces on us (ppm), reject a clamp
+ * (a factor of several). */
+#define RATE_TOL            0.001
 
 static volatile sig_atomic_t g_stop = 0;
 
@@ -396,6 +420,15 @@ int main(int argc, char **argv)
         return 1;
     }
 
+    if (o.samp_rate < AD9361_MIN_RATE || o.samp_rate > AD9361_MAX_RATE) {
+        fprintf(stderr,
+            "error: --samp-rate %.0f is outside the AD9361's range.\n"
+            "       Valid: %.0f .. %.0f Hz (below %.0f Hz the programmable\n"
+            "       FIR is loaded at dec/int 4 to reach the rate).\n",
+            o.samp_rate, AD9361_MIN_RATE, AD9361_MAX_RATE, AD9361_MIN_RATE_FIR);
+        return 1;
+    }
+
     double if_center = o.rf_target - o.lnb_lo;
     double rx_lo = if_center - o.if_offset;
     double tx_lo = o.out_freq - o.if_offset;
@@ -449,9 +482,27 @@ int main(int argc, char **argv)
         return 1;
     }
 
+    /* ---------------- sample rate ----------------
+     * Set this first: it reconfigures the whole digital chain (BBPLL, the
+     * halfband stages and the programmable FIR), and doing so resets the
+     * analog filter corners, so rf_bandwidth has to be written after it.
+     *
+     * ad9361_set_bb_rate() covers RX and TX in one call and loads a
+     * decimate/interpolate-by-4 FIR when the rate is below the FIR-bypassed
+     * floor. Writing 'sampling_frequency' by hand does not, which is why the
+     * default 600 kSPS used to fail with -EINVAL and leave the device at
+     * 30.72 MSPS. */
+    int rate_ret = ad9361_set_bb_rate(phy, (unsigned long)o.samp_rate);
+    if (rate_ret < 0) {
+        fprintf(stderr,
+            "error: ad9361_set_bb_rate(%.0f) failed (%d)\n",
+            o.samp_rate, rate_ret);
+        iio_context_destroy(ctx);
+        return 1;
+    }
+
     iio_channel_attr_write(rx_phy_chn, "rf_port_select", "A_BALANCED");
     chn_wr_ll(rx_phy_chn, "rf_bandwidth", (long long)o.rx_bw);
-    chn_wr_ll(rx_phy_chn, "sampling_frequency", (long long)o.samp_rate);
     chn_wr_ll(rx_lo_chn, "frequency", (long long)rx_lo);
 
     if (o.rx_agc) {
@@ -464,20 +515,40 @@ int main(int argc, char **argv)
     /* ---------------- configure TX ---------------- */
     iio_channel_attr_write(tx_phy_chn, "rf_port_select", "A");
     chn_wr_ll(tx_phy_chn, "rf_bandwidth", (long long)o.tx_bw);
-    chn_wr_ll(tx_phy_chn, "sampling_frequency", (long long)o.samp_rate);
     chn_wr_ll(tx_lo_chn, "frequency", (long long)tx_lo);
     chn_wr_d(tx_phy_chn, "hardwaregain", o.tx_atten);
 
-    /* Verify what the hardware actually accepted. A silently clamped rate
-     * shifts every frequency in the chain proportionally. */
-    long long actual_fs = chn_rd_ll(tx_phy_chn, "sampling_frequency");
-    printf("Sample rate    : requested %.0f, device reports %lld\n",
-           o.samp_rate, actual_fs);
-    if (actual_fs > 0 && fabs((double)actual_fs - o.samp_rate) > 1.0) {
-        printf("  *** WARNING: device did not accept the requested rate.\n");
-        printf("  *** All frequencies will be off by a factor of %.4f\n",
-               (double)actual_fs / o.samp_rate);
+    /* Verify what the hardware actually accepted, on both sides. The LOs are
+     * absolute, so a wrong rate does not move the frequency plan in
+     * passthrough -- but it does scale the filter-mode NCO and FIR cutoff by
+     * the same ratio, and it multiplies the sample throughput the ARM core
+     * has to shovel. A clamped rate is unusable either way, so refuse to run.
+     *
+     * The tolerance is relative, not absolute: the BBPLL and divider chain
+     * can only synthesize discrete rates, so asking for 2.5 MSPS genuinely
+     * lands on 2499998 Hz. That 0.8 ppm is harmless; a rate that got clamped
+     * to a limit is out by a factor of several, which RATE_TOL catches. */
+    long long rx_fs = chn_rd_ll(rx_phy_chn, "sampling_frequency");
+    long long tx_fs = chn_rd_ll(tx_phy_chn, "sampling_frequency");
+    printf("Sample rate    : requested %.0f, device reports RX %lld / TX %lld\n",
+           o.samp_rate, rx_fs, tx_fs);
+    if (rx_fs <= 0 || tx_fs <= 0 ||
+        fabs((double)rx_fs - o.samp_rate) / o.samp_rate > RATE_TOL ||
+        fabs((double)tx_fs - o.samp_rate) / o.samp_rate > RATE_TOL) {
+        fprintf(stderr,
+            "error: device did not accept the requested sample rate\n"
+            "       (asked %.0f, got RX %lld / TX %lld -- off by %.4fx).\n"
+            "       Refusing to run: the ARM core cannot keep up with the\n"
+            "       actual rate, and filter-mode DSP would be off by the\n"
+            "       same ratio.\n",
+            o.samp_rate, rx_fs, tx_fs, (double)rx_fs / o.samp_rate);
+        iio_context_destroy(ctx);
+        return 1;
     }
+
+    /* Within tolerance, but use what the hardware is really clocking so the
+     * NCO and FIR cutoff are designed against the true rate. */
+    o.samp_rate = (double)rx_fs;
     printf("RX gain        : %s\n", o.rx_agc ? "slow_attack AGC" : "manual");
     if (!o.rx_agc) printf("                 %.1f dB\n", o.rx_gain);
     printf("TX attenuation : %.2f dB (0 = full power)\n", o.tx_atten);
