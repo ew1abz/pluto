@@ -6,6 +6,7 @@ This workspace contains a Pluto SDR application and a customized Pluto firmware 
 
 ## Project layout
 
+- [docs](docs): design notes and deferred ideas that are not built yet.
 - [apps/pluto_downconverter](apps/pluto_downconverter): host-side scripts and the native C application.
 - [apps/pluto_downconverter/README.md](apps/pluto_downconverter/README.md): radio architecture, operating assumptions, and debugging notes.
 - [apps/pa_gpo](apps/pa_gpo): AD9363 GPO pin control for keying an external PA from the radio's Rx/Tx state.
@@ -20,7 +21,11 @@ This workspace contains a Pluto SDR application and a customized Pluto firmware 
 - Preserve the known operational invariants from [apps/pluto_downconverter/README.md](apps/pluto_downconverter/README.md):
   - Soapy TX gain is not equivalent to raw libiio attenuation.
   - The offset tuning is deliberate and not a defect.
-  - 600 kSps is a deliberate operating point for the full-duplex path.
+  - 600 kSps is a deliberate operating point for the **Soapy/USB** path,
+    where every sample crosses the USB gadget. The native C program
+    defaults to 1.2 MSps because its samples never leave the Pluto; that
+    is what clears the top of the 3cm narrowband segment. Do not
+    "harmonise" the two.
   - The working path is the Soapy Pluto SDR stack, not the native gr-iio route.
 - GPO slaving in [apps/pa_gpo](apps/pa_gpo) requires TDD mode, which is mutually exclusive with the full-duplex downconverter path. Do not enable it as a "fix" for PA switching in the translator, and restore FDD afterwards.
 - If a change touches gain, frequency math, filtering, or streaming behavior, explain the reasoning and validate against the documented behavior instead of assuming a generic RF rule applies.
@@ -37,4 +42,5 @@ This workspace contains a Pluto SDR application and a customized Pluto firmware 
 - [apps/pluto_downconverter/README.md](apps/pluto_downconverter/README.md)
 - [apps/pa_gpo/README.md](apps/pa_gpo/README.md)
 - [firmware/plutosdr-fw/README.md](firmware/plutosdr-fw/README.md)
+- [docs/README.md](docs/README.md)
 - [Controlling External Devices on the ADALM-PLUTO](https://wiki.analog.com/university/tools/pluto/hacking/power_amp) — source of the GPO/ENSM code in [apps/pa_gpo](apps/pa_gpo).
