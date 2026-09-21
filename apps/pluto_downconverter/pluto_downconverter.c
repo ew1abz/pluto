@@ -44,7 +44,15 @@
  * ---------------------------------------------------------------------------
  * BUILD
  * ---------------------------------------------------------------------------
- * On a host, cross-compiling for Pluto:
+ * The Makefile next to this file cross-builds against the plutosdr-fw
+ * staging tree:
+ *
+ *   make                 # the app
+ *   make install         # stripped copy into apps/bin
+ *   make dsp_test        # numerical checks; run it ON the target, where
+ *                        # the NEON path is the one being exercised
+ *
+ * By hand, cross-compiling for Pluto:
  *
  *   arm-linux-gnueabihf-gcc -O2 -mfpu=neon -mfloat-abi=hard \
  *       -o pluto_downconverter pluto_downconverter.c -liio -lad9361 -lm
@@ -84,8 +92,13 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <getopt.h>
+#include <time.h>
 #include <iio.h>
 #include <ad9361.h>
+
+#if defined(__ARM_NEON) || defined(__ARM_NEON__)
+#include <arm_neon.h>
+#endif
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -120,6 +133,13 @@
 #define RATE_TOL            0.001
 
 static volatile sig_atomic_t g_stop = 0;
+
+static double now_mono(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (double)ts.tv_sec + (double)ts.tv_nsec * 1e-9;
+}
 
 static void handle_sig(int s)
 {
@@ -196,111 +216,202 @@ static int design_lowpass(float *taps, int ntaps, double cutoff_hz, double fs)
 }
 
 /* ------------------------------------------------------------------------- */
-/* Complex decimating FIR with history                                        */
+/* Complex decimating FIR                                                     */
 /* ------------------------------------------------------------------------- */
+/*
+ * History is kept as a contiguous window rather than a shift register. Each
+ * block is written at bi[hist..hist+n-1] with the previous block's last
+ * (ntaps-1) samples already sitting at bi[0..hist-1], so an output at input
+ * index k is a straight dot product over bi[k..k+ntaps-1] -- no per-sample
+ * shuffling. Only one memmove per block carries the tail forward.
+ *
+ * The earlier version memmoved the whole history for every input sample:
+ * ~1 KB of traffic 600k times a second, which is what kept the A9 from
+ * running filter mode in real time.
+ *
+ * Taps are stored time-reversed (so index 0 pairs with the oldest sample)
+ * and zero-padded to a multiple of 4 for the NEON path.
+ */
 
 typedef struct {
-    float *taps;
+    float *taps;     /* time-reversed, zero-padded to tlen */
     int    ntaps;
+    int    tlen;     /* ntaps rounded up to a multiple of 4 */
     int    decim;
-    float *hist_i;   /* circular-free: simple shift buffer of ntaps-1 */
-    float *hist_q;
-    int    hist_len;
-    int    phase;    /* decimation phase counter */
+    float *bi;       /* hist tail + current block, contiguous */
+    float *bq;
+    int    hist;     /* ntaps - 1 */
+    int    phase;    /* decimation phase carried across blocks */
 } cfir_t;
 
-static int cfir_init(cfir_t *f, const float *taps, int ntaps, int decim)
+static int cfir_init(cfir_t *f, const float *taps, int ntaps, int decim,
+                     int maxblock)
 {
-    f->taps  = malloc(sizeof(float) * ntaps);
+    int m;
+
+    memset(f, 0, sizeof(*f));
     f->ntaps = ntaps;
+    f->tlen  = (ntaps + 3) & ~3;
     f->decim = decim;
-    f->hist_len = ntaps - 1;
-    f->hist_i = calloc(f->hist_len ? f->hist_len : 1, sizeof(float));
-    f->hist_q = calloc(f->hist_len ? f->hist_len : 1, sizeof(float));
-    f->phase  = 0;
-    if (!f->taps || !f->hist_i || !f->hist_q)
+    f->hist  = ntaps - 1;
+    f->phase = 0;
+
+    /* The padded taps are zero, but they still index up to tlen-1 past the
+     * window start, so the buffer needs that much slack beyond the block.
+     * calloc keeps the slack at zero -- garbage there could be a NaN, and
+     * 0 * NaN is NaN, which would poison the accumulator. */
+    int cap = f->hist + maxblock + f->tlen;
+
+    f->taps = calloc(f->tlen, sizeof(float));
+    f->bi   = calloc(cap, sizeof(float));
+    f->bq   = calloc(cap, sizeof(float));
+    if (!f->taps || !f->bi || !f->bq)
         return -1;
-    memcpy(f->taps, taps, sizeof(float) * ntaps);
+
+    /* Reverse into the FRONT of the array, leaving the pad at the end: the
+     * newest sample of an output's window sits at b[k + ntaps - 1], so tap
+     * index ntaps-1 must be the one that pairs with it. Padding at the front
+     * instead would shift the whole window by tlen - ntaps. The trailing
+     * zero taps then multiply samples newer than x[k], which contribute
+     * nothing. */
+    for (m = 0; m < ntaps; m++)
+        f->taps[ntaps - 1 - m] = taps[m];
+
     return 0;
 }
 
 static void cfir_free(cfir_t *f)
 {
     free(f->taps);
-    free(f->hist_i);
-    free(f->hist_q);
+    free(f->bi);
+    free(f->bq);
+}
+
+/* Where the caller writes the n new samples for the next cfir_run(). */
+static inline float *cfir_in_i(cfir_t *f) { return f->bi + f->hist; }
+static inline float *cfir_in_q(cfir_t *f) { return f->bq + f->hist; }
+
+/*
+ * One complex output: dot(taps, window) for I and Q against shared taps.
+ *
+ * NEON reassociates the sum into four partial accumulators, so results
+ * differ from the scalar path in the last bit or two. That is fine for this
+ * -- compare with a tolerance, not for equality.
+ */
+static inline void cdot(const float *t, int tlen,
+                        const float *bi, const float *bq,
+                        float *oi, float *oq)
+{
+#if defined(__ARM_NEON) || defined(__ARM_NEON__)
+    float32x4_t ai = vdupq_n_f32(0.0f), aq = vdupq_n_f32(0.0f);
+    float32x2_t si, sq;
+    int m;
+
+    for (m = 0; m < tlen; m += 4) {
+        float32x4_t tv = vld1q_f32(t + m);
+        ai = vmlaq_f32(ai, tv, vld1q_f32(bi + m));
+        aq = vmlaq_f32(aq, tv, vld1q_f32(bq + m));
+    }
+    si = vadd_f32(vget_low_f32(ai), vget_high_f32(ai));
+    sq = vadd_f32(vget_low_f32(aq), vget_high_f32(aq));
+    *oi = vget_lane_f32(vpadd_f32(si, si), 0);
+    *oq = vget_lane_f32(vpadd_f32(sq, sq), 0);
+#else
+    float acc_i = 0.0f, acc_q = 0.0f;
+    int m;
+
+    for (m = 0; m < tlen; m++) {
+        acc_i += t[m] * bi[m];
+        acc_q += t[m] * bq[m];
+    }
+    *oi = acc_i;
+    *oq = acc_q;
+#endif
 }
 
 /*
- * Filter n input samples, writing decimated output.
- * Returns number of output samples produced.
+ * Filter and decimate n samples already written at cfir_in_i/q().
+ * Returns the number of output samples produced.
  *
- * Straightforward direct-form implementation -- readable rather than fast.
- * If this proves too slow on the A9, the obvious optimizations are NEON
- * intrinsics and a polyphase decomposition (which avoids computing outputs
- * that get thrown away by the decimator).
+ * Outputs land on the input indices where the phase counter wraps, which is
+ * every decim'th sample starting at (decim - 1 - phase) -- the same sample
+ * grid the per-sample version produced, just computed directly instead of by
+ * stepping a counter through every input.
  */
-static int cfir_run(cfir_t *f, const float *in_i, const float *in_q, int n,
-                    float *out_i, float *out_q)
+static int cfir_run(cfir_t *f, int n, float *out_i, float *out_q)
 {
     int nout = 0;
-    int hl = f->hist_len;
-    int k, j;
+    int k;
 
-    for (k = 0; k < n; k++) {
-        /* shift history */
-        if (hl > 0) {
-            memmove(f->hist_i, f->hist_i + 1, sizeof(float) * (hl - 1));
-            memmove(f->hist_q, f->hist_q + 1, sizeof(float) * (hl - 1));
-            f->hist_i[hl - 1] = in_i[k];
-            f->hist_q[hl - 1] = in_q[k];
-        }
-
-        if (++f->phase >= f->decim) {
-            f->phase = 0;
-            float acc_i = 0.0f, acc_q = 0.0f;
-            /* newest sample is in_i[k], older ones in history (newest last) */
-            acc_i += f->taps[0] * in_i[k];
-            acc_q += f->taps[0] * in_q[k];
-            for (j = 1; j < f->ntaps; j++) {
-                int hidx = hl - j;
-                if (hidx < 0) break;
-                acc_i += f->taps[j] * f->hist_i[hidx];
-                acc_q += f->taps[j] * f->hist_q[hidx];
-            }
-            out_i[nout] = acc_i;
-            out_q[nout] = acc_q;
-            nout++;
-        }
+    for (k = f->decim - 1 - f->phase; k < n; k += f->decim) {
+        cdot(f->taps, f->tlen, f->bi + k, f->bq + k,
+             &out_i[nout], &out_q[nout]);
+        nout++;
     }
+    f->phase = (f->phase + n) % f->decim;
+
+    /* carry the last (ntaps-1) samples forward as the next block's history */
+    memmove(f->bi, f->bi + n, sizeof(float) * f->hist);
+    memmove(f->bq, f->bq + n, sizeof(float) * f->hist);
+
     return nout;
 }
 
 /* ------------------------------------------------------------------------- */
 /* NCO / rotator                                                              */
 /* ------------------------------------------------------------------------- */
+/*
+ * Recursive complex rotator: the phasor is advanced by one complex multiply
+ * per sample instead of calling cos() and sin(). The old version made two
+ * double-precision libm calls per sample on each of the down- and up-mixes,
+ * four per input sample at 600 kSps, which the A9 has no hardware for.
+ *
+ * Repeated multiplication lets |p| drift, so it is pulled back to the unit
+ * circle periodically.
+ */
+
+#define NCO_RENORM 1024
 
 typedef struct {
-    double phase;
-    double inc;
+    float    pi, pq;   /* running phasor */
+    float    si, sq;   /* per-sample step, exp(j*w) */
+    unsigned n;        /* samples since the last renormalize */
 } nco_t;
 
 static void nco_init(nco_t *n, double freq_hz, double fs)
 {
-    n->phase = 0.0;
-    n->inc = 2.0 * M_PI * freq_hz / fs;
+    double w = 2.0 * M_PI * freq_hz / fs;
+
+    n->pi = 1.0f;
+    n->pq = 0.0f;
+    n->si = (float)cos(w);
+    n->sq = (float)sin(w);
+    n->n  = 0;
 }
 
-/* multiply (i,q) by exp(j*phase), advancing phase */
+/* multiply (i,q) by the current phasor, then advance it */
 static inline void nco_mix(nco_t *n, float ii, float qq, float *oi, float *oq)
 {
-    double c = cos(n->phase);
-    double s = sin(n->phase);
-    *oi = (float)(ii * c - qq * s);
-    *oq = (float)(ii * s + qq * c);
-    n->phase += n->inc;
-    if (n->phase > 2.0 * M_PI)  n->phase -= 2.0 * M_PI;
-    if (n->phase < -2.0 * M_PI) n->phase += 2.0 * M_PI;
+    float pi = n->pi, pq = n->pq;
+    float ni, nq;
+
+    *oi = ii * pi - qq * pq;
+    *oq = ii * pq + qq * pi;
+
+    ni = pi * n->si - pq * n->sq;
+    nq = pi * n->sq + pq * n->si;
+    n->pi = ni;
+    n->pq = nq;
+
+    if (++n->n >= NCO_RENORM) {
+        /* |p| is within a few ppm of 1, so one Newton step on 1/sqrt(m)
+         * is plenty and costs no divide or square root. */
+        float m = ni * ni + nq * nq;
+        float g = 1.5f - 0.5f * m;
+        n->pi = ni * g;
+        n->pq = nq * g;
+        n->n  = 0;
+    }
 }
 
 /* ------------------------------------------------------------------------- */
@@ -593,15 +704,17 @@ int main(int argc, char **argv)
     /* ---------------- DSP setup ---------------- */
     float taps[MAX_TAPS];
     int ntaps = 0;
-    cfir_t fir;
-    nco_t nco_down, nco_up;
-    float *wi = NULL, *wq = NULL, *fi = NULL, *fq = NULL;
+    /* zero-init: these are only touched under use_filter, but the compiler
+     * cannot see that and warns */
+    cfir_t fir = {0};
+    nco_t nco_down = {0}, nco_up = {0};
+    float *fi = NULL, *fq = NULL;
 
     if (o.use_filter) {
         ntaps = 129;
         if (ntaps > MAX_TAPS) ntaps = MAX_TAPS;
         design_lowpass(taps, ntaps, o.filter_bw, o.samp_rate);
-        if (cfir_init(&fir, taps, ntaps, decim) < 0) {
+        if (cfir_init(&fir, taps, ntaps, decim, (int)o.bufsize) < 0) {
             fprintf(stderr, "error: FIR init failed\n");
             return 1;
         }
@@ -610,11 +723,9 @@ int main(int argc, char **argv)
         /* and back up to +offset after, so it clears TX LO leakage */
         nco_init(&nco_up, o.if_offset, o.samp_rate);
 
-        wi = malloc(sizeof(float) * o.bufsize);
-        wq = malloc(sizeof(float) * o.bufsize);
         fi = malloc(sizeof(float) * o.bufsize);
         fq = malloc(sizeof(float) * o.bufsize);
-        if (!wi || !wq || !fi || !fq) {
+        if (!fi || !fq) {
             fprintf(stderr, "error: allocation failed\n");
             return 1;
         }
@@ -629,6 +740,8 @@ int main(int argc, char **argv)
     ptrdiff_t tx_step = iio_buffer_step(txbuf);
 
     unsigned long long nblocks = 0;
+    unsigned long long nsamp = 0, nsamp_mark = 0;
+    double t_mark = now_mono();
 
     while (!g_stop) {
         ssize_t nbytes = iio_buffer_refill(rxbuf);
@@ -654,19 +767,22 @@ int main(int argc, char **argv)
                 d += tx_step;
             }
         } else {
-            /* unpack int16 -> float, mixing down by the offset */
+            /* unpack int16 -> float, mixing down by the offset, straight
+             * into the filter's window so nothing is copied twice */
+            float *win_i = cfir_in_i(&fir);
+            float *win_q = cfir_in_q(&fir);
             int n = 0;
             char *s = p_rx;
             while (s < p_rx_end && n < (int)o.bufsize) {
                 float ii = (float)((int16_t *)s)[0] / 2048.0f;
                 float qq = (float)((int16_t *)s)[1] / 2048.0f;
-                nco_mix(&nco_down, ii, qq, &wi[n], &wq[n]);
+                nco_mix(&nco_down, ii, qq, &win_i[n], &win_q[n]);
                 s += rx_step;
                 n++;
             }
 
             /* filter + decimate */
-            int nout = cfir_run(&fir, wi, wq, n, fi, fq);
+            int nout = cfir_run(&fir, n, fi, fq);
 
             /*
              * Interpolate back up by simple sample-and-hold repetition, then
@@ -702,9 +818,20 @@ int main(int argc, char **argv)
             break;
         }
 
-        if ((++nblocks % 200) == 0) {
-            printf("\r%llu blocks", nblocks);
+        /* Report achieved throughput, not just a block count. The RX refill
+         * blocks, so we can never run fast -- anything short of ~100% means
+         * samples are being dropped on the floor. */
+        nblocks++;
+        nsamp += (unsigned long long)(nbytes / rx_step);
+
+        double t_now = now_mono();
+        if (t_now - t_mark >= 2.0) {
+            double ksps = (double)(nsamp - nsamp_mark) / (t_now - t_mark) / 1e3;
+            printf("\r%llu blocks   %.1f kSps   %.0f%% of real time    ",
+                   nblocks, ksps, 100.0 * ksps * 1e3 / o.samp_rate);
             fflush(stdout);
+            t_mark = t_now;
+            nsamp_mark = nsamp;
         }
     }
 
@@ -712,7 +839,7 @@ int main(int argc, char **argv)
 
     if (o.use_filter) {
         cfir_free(&fir);
-        free(wi); free(wq); free(fi); free(fq);
+        free(fi); free(fq);
     }
     iio_buffer_destroy(txbuf);
     iio_buffer_destroy(rxbuf);

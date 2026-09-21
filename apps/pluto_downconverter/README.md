@@ -177,7 +177,50 @@ Resampler cost at 600 kSps:
 (At the old 2.5 MSps default these were 15 / 104 / 625 — dropping the sample
 rate made narrow filtering practical as a side effect.)
 
-### 7. Native gr-iio blocks vs Soapy
+### 7. The C filter path needed a rewrite to run in real time
+
+The first native-C `--filter` implementation could not keep up on Pluto's
+single 667 MHz Cortex-A9. Measured at 600 kSps with `--tx-atten -89`:
+
+| | CPU (one core) | throughput |
+|---|---|---|
+| original | 98.5% — pegged | ~66% of real time, dropping samples |
+| current | 38.9% | 100% of real time |
+
+Three things were eating the core, none of them the MAC loop people expect:
+
+1. **`cos()`/`sin()` per sample.** The NCO called libm twice per sample on
+   each of the down- and up-mixes — four double-precision transcendentals
+   per input sample, 600k times a second, on a core with no hardware for
+   them. Replaced with a recursive complex rotator (one complex multiply per
+   sample) that is renormalised to the unit circle every 1024 samples.
+   Measured phase error after 2M samples: 8e-9 rad.
+2. **A `memmove` of the whole history per sample.** The FIR kept a shift
+   register, so every input sample moved ~1 KB. History is now a contiguous
+   window with one `memmove` per *block*.
+3. **Scalar MACs.** The dot product is now NEON, four taps at a time.
+
+Polyphase decomposition was *not* needed — the original already computed
+only at the output rate, so it would have bought nothing.
+
+The rewrite also fixed a latent off-by-one: the old shift register applied
+`taps[0]` and `taps[1]` both to the newest sample and delayed every other
+tap by one, because it wrote the current sample into the history *and* then
+used it again directly. `dsp_test.c` checks the filter against a
+double-precision direct convolution and would fail on the old code.
+
+```sh
+make dsp_test
+scp dsp_test root@192.168.2.1:/tmp/ && ssh root@192.168.2.1 /tmp/dsp_test
+```
+
+Run it on the target, not a host — that is where the NEON path is real.
+
+Interpolation back up to the full rate is still a zero-order hold, which is
+crude. It is cheap and its images land far out, but with ~60% of the core
+now free that is the obvious next thing to improve if it proves audible.
+
+### 8. Native gr-iio blocks vs Soapy
 
 The native `PlutoSDR Source` block never produced usable signal on this setup
 (Windows / radioconda) while `Soapy PlutoSDR Source` worked immediately.

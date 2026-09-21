@@ -4,3 +4,8 @@ __pycache__/
 # Local firmware/build outputs
 firmware/plutosdr-fw/build/
 firmware/plutosdr-fw/buildroot/output/
+
+# Cross-built app binaries (see apps/pluto_downconverter/Makefile)
+apps/bin/
+apps/pluto_downconverter/pluto_downconverter
+apps/pluto_downconverter/dsp_test
