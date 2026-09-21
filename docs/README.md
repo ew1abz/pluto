@@ -11,4 +11,5 @@ too long to live in a commit message.
 | Note | Status |
 |---|---|
 | [live-filter-tuning.md](live-filter-tuning.md) | Idea — make the filter follow the radio's dial via CAT or a control socket |
+| [demodulators.md](demodulators.md) | Notes — FM/AM/SSB/CW in C. Most of the chain already exists; the hard parts are AGC and audio egress |
 | [hdl-passthrough.md](hdl-passthrough.md) | Idea — run unfiltered passthrough in the FPGA fabric. The loopback is already in the bitstream; only a way to select it is missing |
