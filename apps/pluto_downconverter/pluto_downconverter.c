@@ -291,6 +291,14 @@ static void cfir_free(cfir_t *f)
 static inline float *cfir_in_i(cfir_t *f) { return f->bi + f->hist; }
 static inline float *cfir_in_q(cfir_t *f) { return f->bq + f->hist; }
 
+/* Input index, within the next block, at which the first output lands.
+ * Call before cfir_run(); the interpolator needs it to line the held
+ * samples up with the input sample grid. */
+static inline int cfir_first_out(const cfir_t *f)
+{
+    return f->decim - 1 - f->phase;
+}
+
 /*
  * One complex output: dot(taps, window) for I and Q against shared taps.
  *
@@ -739,6 +747,9 @@ int main(int argc, char **argv)
     ptrdiff_t rx_step = iio_buffer_step(rxbuf);
     ptrdiff_t tx_step = iio_buffer_step(txbuf);
 
+    /* the interpolator's held sample carries across block boundaries */
+    float hold_i = 0.0f, hold_q = 0.0f;
+
     unsigned long long nblocks = 0;
     unsigned long long nsamp = 0, nsamp_mark = 0;
     double t_mark = now_mono();
@@ -782,33 +793,53 @@ int main(int argc, char **argv)
             }
 
             /* filter + decimate */
+            int first_out = cfir_first_out(&fir);
             int nout = cfir_run(&fir, n, fi, fq);
 
             /*
-             * Interpolate back up by simple sample-and-hold repetition, then
-             * mix back up to +offset. Zero-order hold is crude -- it puts
-             * images at multiples of the decimated rate. The filter_bw is
-             * narrow relative to the sample rate so those images land far
-             * out, and the FTX-1's front end rejects them, but a proper
-             * polyphase interpolator would be cleaner if this proves audible.
+             * Hold back up to the input rate, then mix up to +offset.
+             *
+             * One output per INPUT sample, walking the input grid -- not
+             * decim copies per filtered sample. Those are not the same
+             * count: nout * decim only equals n when decim divides the
+             * block. At the default 16384-sample buffer and decim 3 it
+             * cycled 16383 / 16383 / 16386, so two blocks in three left the
+             * last TX sample stale and every third wrote two samples past
+             * the end of the buffer. That repeated every 3 blocks, an
+             * audible 12 Hz chop, and it jittered the up-mixer's phase
+             * because the NCO advanced a different number of times per
+             * block. Walking the input grid fills the buffer exactly and
+             * keeps the NCO locked to the sample clock.
+             *
+             * The hold itself is still zero-order, which puts images at
+             * multiples of the decimated rate. They land far out and the
+             * FTX-1's front end rejects them; a polyphase interpolator
+             * would be cleaner if they ever prove audible.
              */
             char *d = p_tx;
-            int k = 0;
-            for (k = 0; k < nout; k++) {
-                int rep;
-                for (rep = 0; rep < decim; rep++) {
-                    float oi, oq;
-                    nco_mix(&nco_up, fi[k], fq[k], &oi, &oq);
-                    int si = (int)(oi * 2048.0f);
-                    int sq = (int)(oq * 2048.0f);
-                    if (si >  2047) si =  2047;
-                    if (si < -2048) si = -2048;
-                    if (sq >  2047) sq =  2047;
-                    if (sq < -2048) sq = -2048;
-                    ((int16_t *)d)[0] = (int16_t)si;
-                    ((int16_t *)d)[1] = (int16_t)sq;
-                    d += tx_step;
+            int oidx = 0;
+            int next = first_out;
+            int k;
+            for (k = 0; k < n; k++) {
+                if (oidx < nout && k == next) {
+                    hold_i = fi[oidx];
+                    hold_q = fq[oidx];
+                    oidx++;
+                    next += decim;
                 }
+                float oi, oq;
+                /* mix even before the first output arrives, so the NCO
+                 * advances exactly once per input sample */
+                nco_mix(&nco_up, hold_i, hold_q, &oi, &oq);
+                int si = (int)(oi * 2048.0f);
+                int sq = (int)(oq * 2048.0f);
+                if (si >  2047) si =  2047;
+                if (si < -2048) si = -2048;
+                if (sq >  2047) sq =  2047;
+                if (sq < -2048) sq = -2048;
+                ((int16_t *)d)[0] = (int16_t)si;
+                ((int16_t *)d)[1] = (int16_t)sq;
+                d += tx_step;
             }
         }
 

@@ -136,6 +136,55 @@ int main(void)
     check_min("passband gain", amp_pass / 0.5, 0.98);
     check("stopband leakage", amp_stop / 0.3, 1e-3);
 
+    printf("\n== output grid: interpolator fills the TX buffer exactly ==\n");
+    /*
+     * The interpolator walks the input grid, emitting one sample per input
+     * sample and advancing the held value at first_out, first_out+decim, ...
+     * That only fills the TX buffer exactly if cfir_run's outputs really do
+     * land on a single unbroken grid across block boundaries. Emitting
+     * decim copies per filtered sample instead does NOT: nout*decim differs
+     * from n whenever decim does not divide the block.
+     */
+    static const int dtest[] = { 2, 3, 4, 5, 7, 16 };
+    static const int btest[] = { 16384, 4096, 1000, 999 };
+    int worst_gap = 0, bad_count = 0, overrun = 0;
+    size_t di, bi_;
+
+    for (di = 0; di < sizeof(dtest) / sizeof(dtest[0]); di++) {
+        for (bi_ = 0; bi_ < sizeof(btest) / sizeof(btest[0]); bi_++) {
+            int dd = dtest[di], nn2 = btest[bi_];
+            cfir_t c;
+            if (cfir_init(&c, taps, ntaps, dd, nn2) < 0) { fails++; continue; }
+            long prev = -1, base = 0;
+            int blk;
+            for (blk = 0; blk < 12; blk++) {
+                int fo = cfir_first_out(&c);
+                int no = cfir_run(&c, nn2, oi, oq);
+                int m;
+                /* every output must sit inside the block */
+                if (fo < 0 || (no > 0 && fo + (no - 1) * dd >= nn2)) overrun++;
+                /* and the interpolator must consume exactly no of them */
+                if (no > 0 && fo + no * dd < nn2) bad_count++;
+                for (m = 0; m < no; m++) {
+                    long g = base + fo + (long)m * dd;
+                    if (prev >= 0) {
+                        int gap = (int)(g - prev);
+                        if (gap != dd && gap > worst_gap) worst_gap = gap;
+                        if (gap != dd) bad_count++;
+                    }
+                    prev = g;
+                }
+                base += nn2;
+            }
+            cfir_free(&c);
+        }
+    }
+    printf("  %d decim values x %d block sizes, 12 blocks each\n",
+           (int)(sizeof(dtest) / sizeof(dtest[0])),
+           (int)(sizeof(btest) / sizeof(btest[0])));
+    check("outputs landing outside their block", overrun, 0);
+    check("breaks in the output grid", bad_count, 0);
+
     printf("\n== NCO: recursive rotator vs exact cos/sin ==\n");
     nco_t n1;
     const double foff = 100000.0;

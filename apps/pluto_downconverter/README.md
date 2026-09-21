@@ -216,9 +216,36 @@ scp dsp_test root@192.168.2.1:/tmp/ && ssh root@192.168.2.1 /tmp/dsp_test
 
 Run it on the target, not a host — that is where the NEON path is real.
 
-Interpolation back up to the full rate is still a zero-order hold, which is
-crude. It is cheap and its images land far out, but with ~60% of the core
-now free that is the obvious next thing to improve if it proves audible.
+### 7b. The interpolator has to walk the input grid, not repeat samples
+
+Once filter mode ran in real time, what was left was an audible ~12 Hz
+chop on a steady carrier. The cause: the zero-order hold emitted
+`nout * decim` samples, but `iio_buffer_push()` always pushes the whole
+buffer. Those two counts only agree when `decim` divides the block.
+
+At the default 16384-sample buffer with `decim` 3:
+
+| block | decimation phase | samples written | vs 16384 |
+|---|---|---|---|
+| 0 | 0 | 16383 | −1, last TX sample stale |
+| 1 | 1 | 16383 | −1, last TX sample stale |
+| 2 | 2 | 16386 | **+2, past the end of the buffer** |
+
+The phase cycles every 3 blocks — 81.92 ms, **12.2 Hz**. It also jittered
+the up-mixer, which advanced a different number of times per block.
+
+The hold now walks the *input* sample grid, emitting exactly one output
+per input sample and advancing the held value at the input indices where
+the filter actually produced outputs. The buffer fills exactly for any
+block size and decimation, and the NCO stays locked to the sample clock.
+`dsp_test.c` checks that grid across a range of both.
+
+This bug predates the performance work — it was just hidden behind the
+34% of samples the old code was already dropping.
+
+Interpolation is still a zero-order hold, which is crude. It is cheap and
+its images land far out, but with ~60% of the core now free that is the
+obvious next thing to improve if it proves audible.
 
 ### 8. Native gr-iio blocks vs Soapy
 
