@@ -4,9 +4,9 @@ Uses a single ADALM-Pluto as a fixed-shift frequency translator, letting a
 70cm-capable radio (Yaesu FTX-1) receive 10 GHz narrowband signals.
 
 ```
-10.386 GHz (dish)
+10.368 GHz (dish)
    -> LNB (LO 9,750,154,910 Hz)
-   -> IF ~635.845 MHz
+   -> IF ~617.845 MHz
    -> Pluto RX -> [optional narrow filter] -> Pluto TX
    -> 432.300 MHz
    -> FTX-1

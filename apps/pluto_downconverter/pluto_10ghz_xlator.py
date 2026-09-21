@@ -7,7 +7,7 @@ RX: LNB IF output from a 10 GHz downconverter
 TX: narrow SSB/CW-width signal re-centered into 70cm, for a Yaesu FTX-1
 
 Chain:
-  10.386 GHz (sky) -> LNB (LO = 9,750,154,910 Hz) -> IF ~635.85 MHz
+  10.368 GHz (sky) -> LNB (LO = 9,750,154,910 Hz) -> IF ~617.85 MHz
     -> Pluto RX -> narrow filter/decimate -> resample back up -> Pluto TX
     -> 432.1 MHz -> FTX-1
 
@@ -117,8 +117,8 @@ def main():
                                   formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--uri", default="ip:192.168.2.1",
                      help="Pluto IIO URI (default: ip:192.168.2.1)")
-    ap.add_argument("--rf-target", type=float, default=10.386e9,
-                     help="RF frequency on the dish/sky side, Hz (default: 10.386 GHz)")
+    ap.add_argument("--rf-target", type=float, default=10.368e9,
+                     help="RF frequency on the dish/sky side, Hz (default: 10.368 GHz)")
     ap.add_argument("--tx-freq", type=float, default=432.1e6,
                      help="Pluto TX output frequency into the FTX-1, Hz (default: 432.1 MHz)")
     ap.add_argument("--samp-rate", type=float, default=600e3,

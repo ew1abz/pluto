@@ -5,7 +5,7 @@
  * Pluto's own ARM core via libiio. No host PC required.
  *
  * Signal chain:
- *   10.386 GHz (dish) -> LNB (LO 9,750,154,910 Hz) -> IF ~635.845 MHz
+ *   10.368 GHz (dish) -> LNB (LO 9,750,154,910 Hz) -> IF ~617.845 MHz
  *     -> Pluto RX -> [optional narrow filter] -> Pluto TX -> 432.3 MHz -> FTX-1
  *
  * This is the C equivalent of pluto_downconverter.py. Same frequency plan,
@@ -105,7 +105,7 @@
 #endif
 
 #define LNB_LO_HZ        9750154910.0
-#define DEFAULT_RF_TGT   10386000000.0
+#define DEFAULT_RF_TGT   10368000000.0
 #define DEFAULT_OUT_FREQ 432300000.0
 #define DEFAULT_OFFSET   100000.0
 #define DEFAULT_SAMPRATE 600000.0
@@ -451,7 +451,7 @@ static void usage(const char *prog)
 "\n"
 "  --uri URI           libiio URI. Omit to use the local backend when\n"
 "                      running on Pluto itself; use ip:192.168.2.1 from a host\n"
-"  --rf-target HZ      target frequency at the dish (default 10.386e9)\n"
+"  --rf-target HZ      target frequency at the dish (default 10.368e9)\n"
 "  --lnb-lo HZ         LNB local oscillator (default 9750154910)\n"
 "  --out-freq HZ       where the signal should land (default 432.3e6)\n"
 "  --if-offset HZ      offset tuning amount (default 100e3)\n"

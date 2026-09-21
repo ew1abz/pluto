@@ -5,7 +5,7 @@ pluto_downconverter.py
 Fixed-shift frequency translator using a single PlutoSDR, via gr-soapy.
 
 Signal chain:
-  10.386 GHz (dish) -> LNB (LO 9,750,154,910 Hz) -> IF ~635.845 MHz
+  10.368 GHz (dish) -> LNB (LO 9,750,154,910 Hz) -> IF ~617.845 MHz
     -> Pluto RX -> [optional narrow filter] -> Pluto TX -> 432.3 MHz -> FTX-1
 
 OFFSET TUNING
@@ -122,8 +122,8 @@ def main():
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter)
 
-    ap.add_argument("--rf-target", type=float, default=10.386e9,
-                    help="Target frequency at the dish, Hz (default: 10.386e9)")
+    ap.add_argument("--rf-target", type=float, default=10.368e9,
+                    help="Target frequency at the dish, Hz (default: 10.368e9)")
     ap.add_argument("--lnb-lo", type=float, default=LNB_LO_HZ,
                     help=f"LNB local oscillator, Hz (default: {LNB_LO_HZ:.0f})")
     ap.add_argument("--out-freq", type=float, default=432.3e6,
