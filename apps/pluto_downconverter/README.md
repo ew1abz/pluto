@@ -8,7 +8,7 @@ Uses a single ADALM-Pluto as a fixed-shift frequency translator, letting a
    -> LNB (LO 9,750,154,910 Hz)
    -> IF ~617.845 MHz
    -> Pluto RX -> [optional narrow filter] -> Pluto TX
-   -> 432.300 MHz
+   -> 432.000 MHz
    -> FTX-1
 ```
 
@@ -37,10 +37,10 @@ python pluto_downconverter.py --tx-gain 60 --bufflen 65536
 python pluto_downconverter.py --filter --filter-bw 3000 --tx-gain 60
 
 # TX test tone
-python pluto_tone.py --freq 432.3e6 --tx-gain 60
+python pluto_tone.py --freq 432.0e6 --tx-gain 60
 
 # CW beacon
-python pluto_cw_beacon.py --text "VVV DE KM6RNJ" --freq 432.3e6 --tx-gain 89
+python pluto_cw_beacon.py --text "VVV DE KM6RNJ" --freq 432.0e6 --tx-gain 89
 ```
 
 ---
@@ -48,19 +48,69 @@ python pluto_cw_beacon.py --text "VVV DE KM6RNJ" --freq 432.3e6 --tx-gain 89
 ## Frequency plan
 
 ```
-IF center = RF_target - LNB_LO = 10,386,000,000 - 9,750,154,910 = 635,845,090 Hz
+IF center = RF_target - LNB_LO = 10,368,000,000 - 9,750,154,910 = 617,845,090 Hz
 
-RX LO = IF center - offset = 635,745,090 Hz
-TX LO = out_freq  - offset = 432,200,000 Hz
-                    signal -> 432,300,000 Hz
+RX LO = IF center - offset = 617,745,090 Hz
+TX LO = out_freq  - offset = 431,900,000 Hz
+                    signal -> 432,000,000 Hz
 ```
+
+### Keep the kHz digits readable on the radio
+
+Everything collapses to one relation:
+
+```
+output = out_freq + (F_rf - rf_target)
+```
+
+so the dial reads the same kHz as the 3cm frequency **only if
+`rf_target - out_freq` is a whole number of MHz**. With the defaults it is
+exactly 9936 MHz:
+
+| on 3cm | on the FTX-1 |
+|---|---|
+| 10368.000 | 432.000 |
+| 10368.100 (calling) | 432.100 |
+| 10368.200 | 432.200 |
+
+Change one of the two and you must change the other by the same whole
+number of MHz, or the kHz digits drift apart. The earlier 432.300 default
+was 300 kHz off a whole-MHz shift, which is why 10368.100 came out on
+432.400.
+
+### How much sky you can see at once
+
+Offset tuning shifts the window down by `--if-offset`, so the coverage is
+not centred on `rf_target`:
+
+```
+sky window = rf_target - offset +/- samp_rate/2
+```
+
+Measured native CPU on Pluto's single A9 (`--tx-atten -89`, all at 100%
+of real time):
+
+| `--samp-rate` | sky window | passthrough | `--filter` |
+|---|---|---|---|
+| 600 kSps (default) | 10367.600 – 10368.200 | 9.4% | 38.6% |
+| 1.2 MSps | 10367.300 – 10368.500 | 19.0% | 56.2% |
+| 2.0 MSps | 10366.900 – 10368.900 | 32.0% | 82.1% |
+
+At the default the top of the window falls exactly on 10368.200, so the
+upper end of the narrowband segment sits on the Nyquist edge. 1.2 MSps
+clears the whole segment with margin and still leaves headroom.
+
+Note that the "USB saturates above ~1 MSps" limit in issue 2 below is a
+property of the **host/Soapy** path, where every sample crosses the USB
+gadget. The native C program moves samples inside the Pluto, so its only
+limit is the table above.
 
 ### Why offset tuning
 
 Pluto has a **DC offset spike at the RX center** and **LO leakage at the TX
 center**. Both LOs are deliberately tuned low by the same amount
 (`--if-offset`, default 100 kHz). The wanted signal lands exactly at
-`out_freq`, and both artifacts collect at `out_freq - offset` (432.200 MHz),
+`out_freq`, and both artifacts collect at `out_freq - offset` (431.900 MHz),
 out of the passband.
 
 With `--filter`, the xlating filter removes the DC spike entirely, and a
@@ -328,7 +378,7 @@ change.
 ### Calibration check
 
 Transmit a known 10 GHz reference or find a beacon at a known frequency, then
-see where it lands relative to 432.300 MHz. Any offset is residual LNB LO
+see where it lands relative to 432.000 MHz. Any offset is residual LNB LO
 error; trim `--lnb-lo` to compensate.
 
 ### FPGA implementation (optional)
@@ -351,7 +401,7 @@ no HDL work at all.
 
 - Dummy load or heavy attenuation while testing. Pluto TX is ~0 dBm max, but
   a continuous carrier on 70cm is still a real transmission.
-- Transmitting on 432.3 while receiving on the same chip will desense your own
+- Transmitting on 432.0 while receiving on the same chip will desense your own
   RX before it bothers anyone else. Use the minimum readable gain.
 - Avoid calling frequencies (432.100 is the 70cm CW/EME calling frequency) for
   anything repeating.

@@ -6,7 +6,7 @@
  *
  * Signal chain:
  *   10.368 GHz (dish) -> LNB (LO 9,750,154,910 Hz) -> IF ~617.845 MHz
- *     -> Pluto RX -> [optional narrow filter] -> Pluto TX -> 432.3 MHz -> FTX-1
+ *     -> Pluto RX -> [optional narrow filter] -> Pluto TX -> 432.0 MHz -> FTX-1
  *
  * This is the C equivalent of pluto_downconverter.py. Same frequency plan,
  * same offset-tuning scheme, no GNU Radio.
@@ -106,7 +106,7 @@
 
 #define LNB_LO_HZ        9750154910.0
 #define DEFAULT_RF_TGT   10368000000.0
-#define DEFAULT_OUT_FREQ 432300000.0
+#define DEFAULT_OUT_FREQ 432000000.0
 #define DEFAULT_OFFSET   100000.0
 #define DEFAULT_SAMPRATE 600000.0
 
@@ -453,7 +453,7 @@ static void usage(const char *prog)
 "                      running on Pluto itself; use ip:192.168.2.1 from a host\n"
 "  --rf-target HZ      target frequency at the dish (default 10.368e9)\n"
 "  --lnb-lo HZ         LNB local oscillator (default 9750154910)\n"
-"  --out-freq HZ       where the signal should land (default 432.3e6)\n"
+"  --out-freq HZ       where the signal should land (default 432.0e6)\n"
 "  --if-offset HZ      offset tuning amount (default 100e3)\n"
 "  --samp-rate HZ      RX/TX sample rate (default 600e3)\n"
 "  --rx-gain DB        RX gain, higher = more sensitive (default 50)\n"

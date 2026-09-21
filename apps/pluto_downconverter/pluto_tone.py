@@ -8,7 +8,7 @@ Emits an unmodulated tone at (freq + tone_offset). No Morse, no keying,
 no big sample buffers -- just a continuous complex sinusoid straight into
 the Soapy Pluto sink. This is the minimal "does TX work at all" test.
 
-  python pluto_tone.py --freq 432.3e6 --tx-gain 10
+  python pluto_tone.py --freq 432.0e6 --tx-gain 10
 
 Listen on a 70cm receiver in CW or USB mode at (freq + tone_offset),
 which the script prints on startup.
@@ -62,8 +62,8 @@ def main():
     ap = argparse.ArgumentParser(
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--freq", type=float, default=432.3e6,
-                    help="TX center frequency, Hz (default: 432.3e6)")
+    ap.add_argument("--freq", type=float, default=432.0e6,
+                    help="TX center frequency, Hz (default: 432.0e6)")
     ap.add_argument("--tone-offset", type=float, default=10e3,
                     help="Tone offset from center, Hz. Keeps the signal clear of "
                          "Pluto's LO leakage at exactly center (default: 10 kHz)")

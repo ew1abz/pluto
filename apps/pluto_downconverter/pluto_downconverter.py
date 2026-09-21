@@ -6,7 +6,7 @@ Fixed-shift frequency translator using a single PlutoSDR, via gr-soapy.
 
 Signal chain:
   10.368 GHz (dish) -> LNB (LO 9,750,154,910 Hz) -> IF ~617.845 MHz
-    -> Pluto RX -> [optional narrow filter] -> Pluto TX -> 432.3 MHz -> FTX-1
+    -> Pluto RX -> [optional narrow filter] -> Pluto TX -> 432.0 MHz -> FTX-1
 
 OFFSET TUNING
 -------------
@@ -126,9 +126,9 @@ def main():
                     help="Target frequency at the dish, Hz (default: 10.368e9)")
     ap.add_argument("--lnb-lo", type=float, default=LNB_LO_HZ,
                     help=f"LNB local oscillator, Hz (default: {LNB_LO_HZ:.0f})")
-    ap.add_argument("--out-freq", type=float, default=432.3e6,
+    ap.add_argument("--out-freq", type=float, default=432.0e6,
                     help="Where the signal should land for the FTX-1, Hz "
-                         "(default: 432.3e6)")
+                         "(default: 432.0e6)")
     ap.add_argument("--if-offset", type=float, default=100e3,
                     help="Offset-tuning amount, Hz. Moves the RX DC spike and "
                          "TX LO leakage away from the wanted signal "

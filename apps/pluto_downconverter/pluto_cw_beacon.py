@@ -11,7 +11,7 @@ envelope shaping to avoid key clicks, and loops the message continuously.
 Typical test: transmit into a dummy load (or through attenuation) and listen
 on a 70cm receiver in CW mode to confirm the TX chain works end to end.
 
-  python3 pluto_cw_beacon.py --text "VVV DE KM6RNJ" --freq 432.3e6 --wpm 15
+  python3 pluto_cw_beacon.py --text "VVV DE KM6RNJ" --freq 432.0e6 --wpm 15
 
 Requires: GNU Radio 3.10+ with gr-soapy and SoapyPlutoSDR.
 
@@ -154,8 +154,8 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--text", default="VVV DE KM6RNJ",
                     help='Message to send (default: "VVV DE KM6RNJ")')
-    ap.add_argument("--freq", type=float, default=432.3e6,
-                    help="TX center frequency in Hz (default: 432.3e6)")
+    ap.add_argument("--freq", type=float, default=432.0e6,
+                    help="TX center frequency in Hz (default: 432.0e6)")
     ap.add_argument("--tone-offset", type=float, default=10e3,
                     help="Tone offset from center, Hz. Keeps the signal clear "
                          "of Pluto's LO leakage at exactly center (default: 10 kHz)")
