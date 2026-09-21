@@ -108,7 +108,7 @@
 #define DEFAULT_RF_TGT   10368000000.0
 #define DEFAULT_OUT_FREQ 432000000.0
 #define DEFAULT_OFFSET   100000.0
-#define DEFAULT_SAMPRATE 600000.0
+#define DEFAULT_SAMPRATE 1200000.0
 
 #define MAX_TAPS 512
 
@@ -190,6 +190,23 @@ static long long chn_rd_ll(struct iio_channel *chn, const char *attr)
 /* ------------------------------------------------------------------------- */
 /* Low-pass FIR design (windowed sinc, Hamming)                              */
 /* ------------------------------------------------------------------------- */
+
+/*
+ * A Hamming-windowed FIR's transition width is about 3.3 * fs / ntaps, so a
+ * fixed tap count makes the skirt twice as wide in Hz whenever the sample
+ * rate doubles. Scale the count with fs instead, holding the transition at
+ * roughly three quarters of the cutoff -- which is what the original hard
+ * coded 129 taps happened to give at 600 kSps with a 20 kHz cutoff.
+ */
+static int taps_for(double fs, double cutoff_hz)
+{
+    int n = (int)(3.3 * fs / (0.765 * cutoff_hz));
+
+    n |= 1;                       /* odd, for a symmetric linear-phase filter */
+    if (n < 31) n = 31;
+    if (n > MAX_TAPS - 1) n = MAX_TAPS - 1;
+    return n;
+}
 
 static int design_lowpass(float *taps, int ntaps, double cutoff_hz, double fs)
 {
@@ -372,7 +389,8 @@ static int cfir_run(cfir_t *f, int n, float *out_i, float *out_q)
  * Recursive complex rotator: the phasor is advanced by one complex multiply
  * per sample instead of calling cos() and sin(). The old version made two
  * double-precision libm calls per sample on each of the down- and up-mixes,
- * four per input sample at 600 kSps, which the A9 has no hardware for.
+ * four per input sample -- millions of libm calls a second, which the
+ * A9 has no hardware for.
  *
  * Repeated multiplication lets |p| drift, so it is pulled back to the unit
  * circle periodically.
@@ -455,7 +473,7 @@ static void usage(const char *prog)
 "  --lnb-lo HZ         LNB local oscillator (default 9750154910)\n"
 "  --out-freq HZ       where the signal should land (default 432.0e6)\n"
 "  --if-offset HZ      offset tuning amount (default 100e3)\n"
-"  --samp-rate HZ      RX/TX sample rate (default 600e3)\n"
+"  --samp-rate HZ      RX/TX sample rate (default 1.2e6)\n"
 "  --rx-gain DB        RX gain, higher = more sensitive (default 50)\n"
 "  --rx-agc            use slow_attack AGC instead of manual RX gain\n"
 "  --tx-atten DB       TX ATTENUATION, 0 = full power, -89.75 = min\n"
@@ -673,8 +691,11 @@ int main(int argc, char **argv)
     printf("TX attenuation : %.2f dB (0 = full power)\n", o.tx_atten);
     printf("Filter         : %s\n", o.use_filter ? "ON" : "OFF (passthrough)");
     if (o.use_filter)
-        printf("                 %.0f Hz cutoff, decim %d -> %.1f kSps\n",
-               o.filter_bw, decim, o.samp_rate / decim / 1e3);
+        printf("                 %.0f Hz cutoff, %d taps (~%.1f kHz skirt),\n"
+               "                 decim %d -> %.1f kSps\n",
+               o.filter_bw, taps_for(o.samp_rate, o.filter_bw),
+               3.3 * o.samp_rate / taps_for(o.samp_rate, o.filter_bw) / 1e3,
+               decim, o.samp_rate / decim / 1e3);
     printf("Buffer size    : %zu samples\n", o.bufsize);
     printf("\n");
 
@@ -719,8 +740,7 @@ int main(int argc, char **argv)
     float *fi = NULL, *fq = NULL;
 
     if (o.use_filter) {
-        ntaps = 129;
-        if (ntaps > MAX_TAPS) ntaps = MAX_TAPS;
+        ntaps = taps_for(o.samp_rate, o.filter_bw);
         design_lowpass(taps, ntaps, o.filter_bw, o.samp_rate);
         if (cfir_init(&fir, taps, ntaps, decim, (int)o.bufsize) < 0) {
             fprintf(stderr, "error: FIR init failed\n");

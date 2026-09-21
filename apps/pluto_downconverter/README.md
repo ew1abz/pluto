@@ -87,18 +87,26 @@ not centred on `rf_target`:
 sky window = rf_target - offset +/- samp_rate/2
 ```
 
-Measured native CPU on Pluto's single A9 (`--tx-atten -89`, all at 100%
-of real time):
+The tap count scales with the rate. A Hamming FIR's transition is about
+`3.3 * fs / ntaps`, so a fixed count would make the skirt twice as wide in
+Hz each time the rate doubles; `taps_for()` holds it near 15 kHz instead.
 
-| `--samp-rate` | sky window | passthrough | `--filter` |
-|---|---|---|---|
-| 600 kSps (default) | 10367.600 – 10368.200 | 9.4% | 38.6% |
-| 1.2 MSps | 10367.300 – 10368.500 | 19.0% | 56.2% |
-| 2.0 MSps | 10366.900 – 10368.900 | 32.0% | 82.1% |
+Measured native CPU on Pluto's single A9 (`--tx-atten -89`):
 
-At the default the top of the window falls exactly on 10368.200, so the
-upper end of the narrowband segment sits on the Nyquist edge. 1.2 MSps
-clears the whole segment with margin and still leaves headroom.
+| `--samp-rate` | sky window | taps | passthrough | `--filter` |
+|---|---|---|---|---|
+| 600 kSps | 10367.600 – 10368.200 | 129 | 9.4% | 38.6% |
+| **1.2 MSps (default)** | **10367.300 – 10368.500** | **259** | **19.1%** | **70.8%** |
+| 2.0 MSps | 10366.900 – 10368.900 | 431 | 31.8% | 98.2% — **does not keep up** (85% of real time) |
+
+All but the last row run at 100% of real time. 2 MSps in filter mode is
+past the core: 431 taps at 286 kSps of output is more MAC than is left
+after the two mixers. It was measured at 82% before the taps scaled with
+the rate, but that was a filter with a 30 kHz skirt, not a 15 kHz one.
+
+600 kSps was the old default and puts the top of the narrowband segment
+exactly on the Nyquist edge. 1.2 MSps clears the segment with margin and
+keeps ~29% of the core spare.
 
 Note that the "USB saturates above ~1 MSps" limit in issue 2 below is a
 property of the **host/Soapy** path, where every sample crosses the USB
@@ -164,8 +172,10 @@ against that and should *not* be "fixed" to use 0–89.
 At 2.5 MSps in both directions, that's roughly 10 MB/s each way (~20 MB/s
 total) through Pluto's USB network gadget. The result is choppy, broken audio.
 
-**Fix:** drop the sample rate. 600 kSps is the default now — still ~30× more
-bandwidth than an SSB signal needs.
+**Fix:** drop the sample rate. 600 kSps is the default for the Python
+scripts — still ~30× more bandwidth than an SSB signal needs. The native C
+program defaults to 1.2 MSps instead, because its samples never cross USB;
+see the sky-window table above.
 
 ### 3. Rates below 2.083 MSps need the on-chip FIR decimator
 
@@ -230,7 +240,8 @@ rate made narrow filtering practical as a side effect.)
 ### 7. The C filter path needed a rewrite to run in real time
 
 The first native-C `--filter` implementation could not keep up on Pluto's
-single 667 MHz Cortex-A9. Measured at 600 kSps with `--tx-atten -89`:
+single 667 MHz Cortex-A9. Measured at 600 kSps with `--tx-atten -89`, which
+was the default at the time:
 
 | | CPU (one core) | throughput |
 |---|---|---|

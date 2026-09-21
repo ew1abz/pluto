@@ -51,13 +51,15 @@ static float  taps[MAX_TAPS];
 
 int main(void)
 {
-    const double fs = 600000.0, cut = 20000.0;
+    const double fs = 1200000.0, cut = 20000.0;
     const double f_pass = 5000.0, f_stop = 120000.0;
-    const int ntaps = 129, decim = 3;
-    int b, k, j;
+    const int decim = 7;
+    int ntaps, b, k, j;
+    size_t ti;
     long g;
 
-    design_lowpass(taps, ntaps, cut, fs);
+    /* the rate-scaled count the default now uses, and the old fixed one */
+    const int tapset[2] = { taps_for(fs, cut), 129 };
 
     /* passband tone + stopband interferer + a little noise */
     unsigned seed = 12345;
@@ -71,7 +73,12 @@ int main(void)
                       + 0.3 * sin(2 * M_PI * f_stop * t) + nz);
     }
 
-    printf("\n== FIR vs direct convolution (double precision) ==\n");
+    for (ti = 0; ti < 2; ti++) {
+    ntaps = tapset[ti];
+    design_lowpass(taps, ntaps, cut, fs);
+
+    printf("\n== FIR vs direct convolution, %d taps at %.0f kSps ==\n",
+           ntaps, fs / 1e3);
 
     /* Outputs fire at input indices decim-1, 2*decim-1, ... */
     long nref = 0;
@@ -135,6 +142,7 @@ int main(void)
            "stopband %.2e (in 0.300)\n", amp_pass, amp_stop);
     check_min("passband gain", amp_pass / 0.5, 0.98);
     check("stopband leakage", amp_stop / 0.3, 1e-3);
+    }
 
     printf("\n== output grid: interpolator fills the TX buffer exactly ==\n");
     /*
@@ -154,7 +162,7 @@ int main(void)
         for (bi_ = 0; bi_ < sizeof(btest) / sizeof(btest[0]); bi_++) {
             int dd = dtest[di], nn2 = btest[bi_];
             cfir_t c;
-            if (cfir_init(&c, taps, ntaps, dd, nn2) < 0) { fails++; continue; }
+            if (cfir_init(&c, taps, 129, dd, nn2) < 0) { fails++; continue; }
             long prev = -1, base = 0;
             int blk;
             for (blk = 0; blk < 12; blk++) {
